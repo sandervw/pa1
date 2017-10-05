@@ -42,9 +42,7 @@ public class BloomFilterFNV {
 		int result;
 		for(int i=0; i<filterSize; i++){
 			result = hash(i, hashFNV1, hashFNV2).intValue();
-			if(!filter.get(result)){
-				return false;
-			}
+			if(!filter.get(result)) return false;
 		}
 		return true;
 	}
