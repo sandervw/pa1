@@ -1,10 +1,13 @@
 import java.io.BufferedReader;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -25,15 +28,15 @@ public class WikiCrawler {
 	
 	private static final String BASE_URL = "https://en.wikipedia.org";
 	private String seedUrl;
-	private String[] keyWords;
+	private String[] keywords;
 	private int max;
 	private String fileName;
 	private boolean isWeighted;
 	
 	private ArrayList<String> edges;
-	private TreeSet<Tuple> Q;
-	private HashSet<String> related;
-	private HashSet<String> unrelated;
+	private SortedSet<Tuple> Q;
+	private HashSet<String> nodes;
+	private HashSet<String> forbidden;
 	
 	private int connections = 0;
 	
@@ -50,7 +53,7 @@ public class WikiCrawler {
 		
 		//Init basic variables
 		this.seedUrl = seedUrl;
-		this.keyWords = keyWords;
+		this.keywords = keywords;
 		this.max = max;
 		this.fileName = fileName;
 		this.isWeighted = isWeighted;
@@ -58,8 +61,8 @@ public class WikiCrawler {
 		//Init variables to store nodes and edges
 		this.edges = new ArrayList<String>();
 		this.Q = new TreeSet<Tuple>();
-		this.related = new HashSet<String>();
-		this.unrelated = new HashSet<String>();
+		this.nodes = new HashSet<String>();
+		this.forbidden = new HashSet<String>();
 		
 	}
 	
@@ -73,21 +76,88 @@ public class WikiCrawler {
 	 */
 	public void crawl(){
 		
+		this.getForbidden();
+		
+		nodes.add(seedUrl);
+		
 		//Create a regex pattern to match everything after the first <p> tag only
 		String  pattern = "<p>(.*)";
 		Pattern r       = Pattern.compile(pattern);
 		String  url     = BASE_URL + seedUrl;
 		Matcher m;
-		
+		//get first node
 		m = r.matcher(getHTML(url));
 		m.find();
-		//Extract all the links for the new page
-		ArrayList<String> temp = extractTuples(m.group(0));
-		for(int i = 0; i < temp.size(); i++){
-			System.out.println(temp.get(i));
-		}
-		System.out.println("test");
+		String tempUrl = seedUrl;
+		ArrayList<Tuple> resultList = extractTuples(m.group(0));
 		
+		String link;
+		for(int i = 0; i < resultList.size(); i++) {
+			link = resultList.get(i).getName();
+			if (!tempUrl.equals(link)) {
+				//Add all the new links to Nodes (If we haven't hit the max)
+				if (!nodes.contains(link) && nodes.size() < max && !forbidden.contains(link)) {
+					nodes.add(link);
+					Q.add(resultList.get(i));
+				}
+				//Add all the new directions to Edges (if it exists in Nodes)
+				if (nodes.contains(link) && !edges.contains(tempUrl + " " + link) && !forbidden.contains(link)) {
+					edges.add(tempUrl + " " + link);
+				}
+			}
+		}
+		
+		Tuple first;
+		while(!Q.isEmpty()) {
+			//get the highest weighted node first
+			first = Q.last();
+			Q.remove(first);
+			tempUrl = first.getName();
+			
+			url = BASE_URL + tempUrl;
+			m = r.matcher(getHTML(url));
+			if(m.find()) {
+				resultList = extractTuples(m.group(0));
+				
+				for(int i = 0; i < resultList.size(); i++) {
+					link = resultList.get(i).getName();
+					if (!tempUrl.equals(link)) {
+						//Add all the new links to Nodes (If we haven't hit the max)
+						if (!nodes.contains(link) && nodes.size() < max  && !forbidden.contains(link)) {
+							nodes.add(link);
+							Q.add(resultList.get(i));
+						}
+						//Add all the new directions to Edges (if it exists in Nodes)
+						if (nodes.contains(link) && !edges.contains(tempUrl + " " + link)  && !forbidden.contains(link)) {
+							edges.add(tempUrl + " " + link);
+						}
+					}
+				}
+			}
+			
+		}
+		
+		//Print the edges to a result file, specified in the constructor.
+		PrintWriter out = null;
+				
+		try {
+			out = new PrintWriter(fileName);
+			out.println(max);
+			for(int i = 0; i < edges.size(); i++){
+				out.println(edges.get(i));
+			}
+			out.close();
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		}
+		
+	}
+	
+	private void getForbidden() {
+		ArrayList<String> temp = extractLinks(getHTML(BASE_URL + "/robots.txt"));
+		for(int i = 0; i < temp.size(); i++) {
+			this.forbidden.add(temp.get(i));
+		}
 	}
 	
 	//**************************************************************************
@@ -99,15 +169,32 @@ public class WikiCrawler {
 	 * page as parameter. This method should return an array list (of Tuples) consisting of 
 	 *   links and weights
 	 */
-	private ArrayList<String> extractTuples(String doc) {
+	private ArrayList<Tuple> extractTuples(String doc) {
 		
-		ArrayList<String> results = new ArrayList<String>();
-		String pattern = "<a href=\"\\/wiki\\/(.[^#:]*?)\"";
+		ArrayList<Tuple> results = new ArrayList<Tuple>();
+		String pattern = "href=\"(\\/wiki\\/.[^#:]*?)\".*?</a>";
 		Pattern r = Pattern.compile(pattern);
 		Matcher m = r.matcher(doc);
 		while (m.find()) {
-			//Cut out the directory path and re-add the /wiki/ part. (this should always be a /wiki/ link)
-			results.add(m.group());
+			double weight = 0;
+			for(int i = 0; i < keywords.length; i++) {
+				if(m.group().contains(keywords[i]) && this.isWeighted) weight = 1;
+			}
+			Tuple t = new Tuple (m.group(1), weight);
+			results.add(t);
+		}
+
+		return results;
+	}
+	
+	private ArrayList<String> extractLinks(String doc) {
+		
+		ArrayList<String> results = new ArrayList<String>();
+		String pattern = "(\\/wiki\\/.*?)[D# \\s\\r\\n]";
+		Pattern r = Pattern.compile(pattern);
+		Matcher m = r.matcher(doc);
+		while (m.find()) {
+			results.add(m.group(1));
 		}
 
 		return results;
@@ -126,7 +213,7 @@ public class WikiCrawler {
 			//create an input stream, and read every line of the page into a string
 			InputStream is = url.openStream();
 			
-			//Timeout for 3 seconds after every 100 requests.
+			//Timeout for 1 seconds after every 10 requests.
 			connections++;
 			if(connections >= 9){
 				TimeUnit.SECONDS.sleep(1);
@@ -157,7 +244,7 @@ public class WikiCrawler {
 	 * 
 	 * This is a container class to store a page and its weight
 	 */
-	public class Tuple{
+	public class Tuple implements Comparable<Tuple>{
 		
 		private String name;
 		private double weight;
@@ -176,11 +263,20 @@ public class WikiCrawler {
 		public double getWeight(){
 			return this.weight;
 		}
-		
-		public int compareTo(Tuple t){
+
+		@Override
+		public int compareTo(Tuple t) {
 			if (this.weight > t.weight) return 1;
 			else if (t.weight > this.weight) return -1;
+			else if (this.name.compareTo(t.name) != 0) return this.name.compareTo(t.name);
 			else return 0;
+		}
+		
+		@Override
+		public boolean equals(Object obj) {
+			Tuple t = (Tuple)obj;
+			if (this.name.equals(t.name) && this.weight == t.weight) return true;
+			return false;
 		}
 		
 	}
